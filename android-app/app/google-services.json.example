@@ -1,0 +1,13 @@
+{
+  "_README": "这是 google-services.json 的占位文件。请按以下步骤获取真实文件：",
+  "_STEPS": [
+    "1. 访问 https://console.firebase.google.com/",
+    "2. 创建新项目（或使用现有项目）",
+    "3. 添加 Android 应用，包名填写: ai.openclaw.imapp",
+    "4. 下载 google-services.json 并替换此文件",
+    "5. 在 server/src/index.ts 的 startAccount 中加入：",
+    "   setFcmServerKey('your-server-key-from-firebase-console')",
+    "   或设置环境变量: IMAPP_FCM_SERVER_KEY=your-server-key"
+  ],
+  "_NOTE": "FCM Server Key 在 Firebase Console -> 项目设置 -> Cloud Messaging -> 服务器密钥"
+}

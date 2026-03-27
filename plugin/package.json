@@ -1,0 +1,49 @@
+{
+  "name": "@openclaw/openclaw-imapp",
+  "version": "1.0.0",
+  "description": "OpenClaw IMApp - 自托管即时通讯插件",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@libsql/client": "^0.17.2",
+    "express": "^4.18.0",
+    "qrcode": "^1.5.3",
+    "qrcode-terminal": "^0.12.0",
+    "sqlite": "^5.1.1",
+    "uuid": "^10.0.0",
+    "ws": "^8.18.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.0.0",
+    "@types/qrcode": "^1.5.5",
+    "@types/uuid": "^10.0.0",
+    "@types/ws": "^8.5.12",
+    "typescript": "^5.8.0"
+  },
+  "peerDependencies": {
+    "express": "^4.18.0"
+  },
+  "openclaw": {
+    "extensions": [
+      "./dist/index.js"
+    ],
+    "channel": {
+      "id": "openclaw-imapp",
+      "label": "openclaw-imapp",
+      "selectionLabel": "openclaw-imapp (专属App)",
+      "docsPath": "/channels/openclaw-imapp",
+      "docsLabel": "openclaw-imapp",
+      "blurb": "专属 App 即时通讯，扫码登录，本地存储",
+      "order": 80
+    }
+  }
+}

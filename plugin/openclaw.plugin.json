@@ -1,0 +1,22 @@
+{
+  "id": "openclaw-imapp",
+  "name": "OpenClaw IMApp",
+  "description": "专属 App 即时通讯系统，Token登录，本地存储",
+  "channels": ["openclaw-imapp"],
+  "commands": [
+    {
+      "command": "token",
+      "description": "管理设备Token：token create [设备名] - 创建Token | token list - 列出Token | token revoke [token] - 撤销Token"
+    }
+  ],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "baseUrl": {
+        "type": "string",
+        "description": "公网访问地址"
+      }
+    }
+  }
+}

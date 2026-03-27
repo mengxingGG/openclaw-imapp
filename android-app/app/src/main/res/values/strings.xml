@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">OpenClaw IMApp</string>
+    <string name="notification_channel_name">消息通知</string>
+    <string name="notification_channel_desc">来自 OpenClaw 助手的消息</string>
+</resources>

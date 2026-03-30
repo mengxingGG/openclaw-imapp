@@ -68,24 +68,30 @@ export function initWebSocket(server, runtime, cfg) {
         });
         ws.on('close', () => {
             clients.delete(ws);
+            // 清理处理中标记
+            client.processing = false;
             logger.info(`WebSocket disconnected: user=${client.userId}`);
         });
         ws.on('error', (err) => {
             logger.error(`WebSocket error: ${err}`);
             clients.delete(ws);
+            client.processing = false;
         });
     });
     // 心跳检测 - 5分钟超时，处理中的客户端跳过检查
     setInterval(() => {
         const now = Date.now();
+        const dead = [];
         for (const [ws, client] of clients) {
-            // 跳过正在处理消息的客户端
             if (client.processing) continue;
             if (now - client.lastPing > 300000) {
                 logger.warn(`Client timeout: user=${client.userId}`);
-                ws.terminate();
-                clients.delete(ws);
+                dead.push(ws);
             }
+        }
+        for (const ws of dead) {
+            try { ws.terminate(); } catch (_) {}
+            clients.delete(ws);
         }
     }, 30000);
     return wss;

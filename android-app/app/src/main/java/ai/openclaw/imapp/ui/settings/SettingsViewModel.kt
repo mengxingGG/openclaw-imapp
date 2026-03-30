@@ -60,7 +60,7 @@ class SettingsViewModel @Inject constructor(
     fun logout(onDone: () -> Unit) {
         viewModelScope.launch {
             repository.disconnectWebSocket()
-            repository.clearSession()
+            repository.clearLocalSessionData()
             onDone()
         }
     }

@@ -104,10 +104,9 @@ fun BubbleContent(
                 modifier = Modifier
                     .clip(shape)
                     .background(bubbleBg)
-                    .padding(horizontal = 14.dp, vertical = 10.dp)
-                    .widthIn(max = 280.dp),
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
             ) {
-                Text(content.text ?: "", fontSize = 15.sp, softWrap = true, color = textColor)
+                MarkdownText(content.text ?: "", fontSize = MaterialTheme.typography.bodyMedium)
             }
         }
 

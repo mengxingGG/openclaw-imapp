@@ -3,6 +3,7 @@ package ai.openclaw.imapp.data.repository
 import ai.openclaw.imapp.data.api.ApiClientFactory
 import ai.openclaw.imapp.data.api.ImappWebSocketManager
 import ai.openclaw.imapp.data.api.ServerConfigStore
+import ai.openclaw.imapp.data.local.MessageStore
 import ai.openclaw.imapp.data.model.*
 import android.content.ContentValues
 import android.content.Context
@@ -10,14 +11,18 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
+import com.google.firebase.messaging.FirebaseMessaging
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
-import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import retrofit2.Response
+import java.io.InputStream
+import java.io.OutputStream
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -31,26 +36,23 @@ class ImappRepository @Inject constructor(
     private suspend fun api() = clientFactory.getApi(configStore.serverUrl.first() ?: "")
     private suspend fun authHeader() = "Bearer ${configStore.sessionToken.first() ?: ""}"
 
+    /** 安全解析 Response body，避免 body()!! NPE */
+    private inline fun <T> parseBody(response: Response<T>): T {
+        if (!response.isSuccessful) throw RuntimeException("HTTP ${response.code()}: ${response.message()}")
+        return response.body() ?: throw RuntimeException("Empty response body")
+    }
+
     // ==================== Auth ====================
 
-    suspend fun getQrCode(deviceName: String, deviceId: String?): Result<QrCodeResponse> = runCatching {
-        api().getQrCode(QrCodeRequest(deviceName, deviceId)).body()!!
-    }
-
-    suspend fun pollStatus(sessionKey: String): Result<PollResponse> = runCatching {
-        api().pollStatus(PollRequest(sessionKey)).body()!!
-    }
-
-    suspend fun getTokenBySessionKey(sessionKey: String): Result<GetTokenResponse> = runCatching {
-        api().getTokenBySessionKey(GetTokenRequest(sessionKey)).body()!!
-    }
-
     suspend fun verifySession(token: String): Result<VerifyResponse> = runCatching {
-        api().verifySession(VerifyRequest(token)).body()!!
+        parseBody(api().verifySession(VerifyRequest(token)))
     }
 
-    suspend fun verifyToken(token: String, deviceCode: String? = null): Result<VerifyTokenResponse> = runCatching {
-        api().verifyToken(VerifyTokenRequest(token, deviceCode)).body()!!
+    suspend fun verifyToken(token: String, deviceCode: String? = null, serverUrl: String? = null): Result<VerifyTokenResponse> = runCatching {
+        val baseUrl = serverUrl ?: configStore.serverUrl.first() ?: ""
+        // 重置 API 缓存，确保用最新的 baseUrl 构建
+        clientFactory.resetApi()
+        parseBody(clientFactory.getApi(baseUrl).verifyToken(VerifyTokenRequest(token, deviceCode)))
     }
 
     suspend fun saveSession(token: String, userId: String, userName: String) {
@@ -59,16 +61,21 @@ class ImappRepository @Inject constructor(
 
     suspend fun clearSession() = configStore.clearSession()
 
+    suspend fun clearLocalSessionData() {
+        MessageStore.clear(context)
+        configStore.clearSession()
+    }
+
     // ==================== Messages ====================
 
-    suspend fun getHistory(limit: Int = 50, before: String? = null): Result<MessageHistoryResponse> = runCatching {
-        api().getHistory(authHeader(), MessageHistoryRequest(limit, before)).body()!!
+    suspend fun getHistory(limit: Int = 50, before: Long? = null, after: Long? = null): Result<MessageHistoryResponse> = runCatching {
+        parseBody(api().getHistory(authHeader(), MessageHistoryRequest(limit, before?.toString(), after)))
     }
 
     // ==================== Devices ====================
 
     suspend fun getDevices(): Result<DeviceListResponse> = runCatching {
-        api().getDevices(authHeader()).body()!!
+        parseBody(api().getDevices(authHeader()))
     }
 
     suspend fun revokeDevice(deviceId: String): Result<Boolean> = runCatching {
@@ -79,17 +86,18 @@ class ImappRepository @Inject constructor(
 
     suspend fun uploadMedia(uri: Uri, mimeType: String): Result<UploadResponse> = runCatching {
         val auth = authHeader()
-        val urlResp = api().getUploadUrl(auth, UploadUrlRequest(mimeType = mimeType)).body()!!
-        val bytes = context.contentResolver.openInputStream(uri)!!.use { it.readBytes() }
-        val body = bytes.toRequestBody(mimeType.toMediaTypeOrNull())
-        api().uploadMedia(auth, mimeType, urlResp.fileId, body).body()!!
+        val urlResp = parseBody(api().getUploadUrl(auth, UploadUrlRequest(mimeType = mimeType)))
+        context.contentResolver.openInputStream(uri)?.use { inputStream ->
+            val body = inputStream.readBytes().toRequestBody(mimeType.toMediaTypeOrNull())
+            parseBody(api().uploadMedia(auth, mimeType, urlResp.fileId, body))
+        } ?: throw RuntimeException("Cannot open file")
     }
 
     suspend fun uploadBytes(bytes: ByteArray, mimeType: String): Result<UploadResponse> = runCatching {
         val auth = authHeader()
-        val urlResp = api().getUploadUrl(auth, UploadUrlRequest(mimeType = mimeType)).body()!!
+        val urlResp = parseBody(api().getUploadUrl(auth, UploadUrlRequest(mimeType = mimeType)))
         val body = bytes.toRequestBody(mimeType.toMediaTypeOrNull())
-        api().uploadMedia(auth, mimeType, urlResp.fileId, body).body()!!
+        parseBody(api().uploadMedia(auth, mimeType, urlResp.fileId, body))
     }
 
     fun mediaUrl(serverUrl: String, token: String, fileId: String): String {
@@ -97,8 +105,7 @@ class ImappRepository @Inject constructor(
     }
 
     /**
-     * 下载媒体文件到设备 Downloads 目录
-     * Returns the URI of the saved file or throws
+     * 下载媒体文件到设备 Downloads 目录（流式写入，避免大文件 OOM）
      */
     suspend fun downloadMedia(fileId: String, filename: String, mimeType: String = "*/*"): Result<Uri> = runCatching {
         withContext(Dispatchers.IO) {
@@ -106,19 +113,20 @@ class ImappRepository @Inject constructor(
             val token = configStore.sessionToken.first() ?: error("No session token")
             val url = "${serverUrl.trimEnd('/')}/imapp/media/$fileId?token=$token"
 
-            val client = OkHttpClient()
+            val client = clientFactory.okHttpClient
             val response = client.newCall(Request.Builder().url(url).build()).execute()
             if (!response.isSuccessful) error("Download failed: ${response.code}")
 
-            val bytes = response.body!!.bytes()
             val resolvedMime = response.header("Content-Type")?.substringBefore(';')?.trim()
                 ?: mimeType.ifBlank { "application/octet-stream" }
 
-            saveToDownloads(bytes, filename, resolvedMime)
+            val responseBody = response.body ?: error("Empty response body")
+            saveToDownloads(responseBody.byteStream(), filename, resolvedMime)
         }
     }
 
-    private fun saveToDownloads(bytes: ByteArray, filename: String, mimeType: String): Uri {
+    /** 流式写入文件，避免整体读入内存 */
+    private fun saveToDownloads(inputStream: InputStream, filename: String, mimeType: String): Uri {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val values = ContentValues().apply {
                 put(MediaStore.Downloads.DISPLAY_NAME, filename)
@@ -128,7 +136,9 @@ class ImappRepository @Inject constructor(
             val resolver = context.contentResolver
             val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
                 ?: error("Cannot create download entry")
-            resolver.openOutputStream(uri)!!.use { it.write(bytes) }
+            resolver.openOutputStream(uri)?.use { output ->
+                copyStream(inputStream, output)
+            }
             values.clear()
             values.put(MediaStore.Downloads.IS_PENDING, 0)
             resolver.update(uri, values, null, null)
@@ -137,14 +147,29 @@ class ImappRepository @Inject constructor(
             val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
             dir.mkdirs()
             val file = java.io.File(dir, filename)
-            file.writeBytes(bytes)
+            file.outputStream().use { output ->
+                copyStream(inputStream, output)
+            }
             Uri.fromFile(file)
+        }
+    }
+
+    private fun copyStream(input: InputStream, output: OutputStream) {
+        val buffer = ByteArray(8192)
+        var read: Int
+        while (input.read(buffer).also { read = it } != -1) {
+            output.write(buffer, 0, read)
         }
     }
 
     // ==================== FCM ====================
 
     suspend fun registerFcmToken(fcmToken: String, deviceName: String?): Result<Boolean> = runCatching {
+        api().registerFcmToken(authHeader(), FcmRegisterRequest(fcmToken, deviceName)).isSuccessful
+    }
+
+    suspend fun syncCurrentFcmToken(deviceName: String? = Build.MODEL): Result<Boolean> = runCatching {
+        val fcmToken = awaitFirebaseToken() ?: return@runCatching false
         api().registerFcmToken(authHeader(), FcmRegisterRequest(fcmToken, deviceName)).isSuccessful
     }
 
@@ -164,5 +189,18 @@ class ImappRepository @Inject constructor(
     suspend fun checkHealth(serverUrl: String): Boolean = runCatching {
         clientFactory.getApi(serverUrl).health().isSuccessful
     }.getOrDefault(false)
-}
 
+    private suspend fun awaitFirebaseToken(): String? = suspendCancellableCoroutine { continuation ->
+        FirebaseMessaging.getInstance().token
+            .addOnSuccessListener { token ->
+                if (continuation.isActive) {
+                    continuation.resume(token, onCancellation = null)
+                }
+            }
+            .addOnFailureListener {
+                if (continuation.isActive) {
+                    continuation.resume(null, onCancellation = null)
+                }
+            }
+    }
+}

@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { getDb } from '../db/index.js';
 import { verifySession, getBaseUrl } from '../auth/index.js';
 import { logger } from '../util/logger.js';
+import { trimMessages } from '../routes/index.js';
 const clients = new Map();
 let wss = null;
 let channelRuntime = null;
@@ -46,12 +47,14 @@ export function initWebSocket(server, runtime, cfg) {
         };
         clients.set(ws, client);
         logger.info(`WebSocket connected: user=${authenticatedUserId}`);
-        // 发送欢迎消息
+        // 发送欢迎消息（作为时间戳同步锚点，不存入数据库）
+        const welcomeTs = Date.now();
         send(ws, {
             type: 'message',
+            id: `welcome-${welcomeTs}`,
             from: 'system',
-            timestamp: Date.now(),
-            content: { type: 'text', text: '连接成功' },
+            timestamp: welcomeTs,
+            content: { type: 'text', text: '🤖 连接成功，开始对话吧！' },
         });
         ws.on('message', (data) => {
             try {
@@ -287,10 +290,14 @@ async function handleUserMessage(ws, client, msg) {
     }
     finally {
         clearInterval(typingKeepalive);
+        // 确保客户端清除 typing 状态
+        send(ws, { type: 'typing', status: 'idle' });
         markDispatchIdle();
         // 处理完成，清除标记并更新心跳时间
         client.processing = false;
         client.lastPing = Date.now();
+        // 异步清理超量消息
+        trimMessages().catch(() => {});
     }
 }
 /**

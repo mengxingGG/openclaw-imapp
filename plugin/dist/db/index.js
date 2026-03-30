@@ -250,7 +250,7 @@ async function createTables(db) {
     await db.run(`
     INSERT OR IGNORE INTO users (id, name, role, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?)
-  `, 'user-001', '罗', 'owner', now, now);
+  `, 'user-001', 'Owner', 'owner', now, now);
     // 创建默认对话上下文
     await db.run(`
     INSERT OR IGNORE INTO conversation_contexts (id, conversation_id, created_at, updated_at)

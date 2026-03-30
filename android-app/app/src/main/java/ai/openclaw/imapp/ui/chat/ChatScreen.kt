@@ -122,6 +122,8 @@ fun ChatScreen(
     }
 
     Scaffold(
+        modifier = Modifier.fillMaxSize(),
+        containerColor = MaterialTheme.colorScheme.background,
         contentWindowInsets = WindowInsets.ime,
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {

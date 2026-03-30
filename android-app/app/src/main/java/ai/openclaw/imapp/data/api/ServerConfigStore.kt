@@ -8,6 +8,8 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import java.util.UUID
 import javax.inject.Inject
@@ -30,8 +32,19 @@ class ServerConfigStore @Inject constructor(
     val userId: Flow<String?> = context.dataStore.data.map { it[USER_ID] }
     val userName: Flow<String?> = context.dataStore.data.map { it[USER_NAME] }
 
-    val deviceId: Flow<String> = context.dataStore.data.map {
-        it[DEVICE_ID] ?: UUID.randomUUID().toString().also { id -> saveDeviceId(id) }
+    private var cachedDeviceId: String? = null
+
+    val deviceId: Flow<String> = flow {
+        val id = cachedDeviceId ?: context.dataStore.data.first()[DEVICE_ID]
+        if (id != null) {
+            cachedDeviceId = id
+            emit(id)
+        } else {
+            val newId = UUID.randomUUID().toString()
+            saveDeviceId(newId)
+            cachedDeviceId = newId
+            emit(newId)
+        }
     }
 
     suspend fun saveServerUrl(url: String) {

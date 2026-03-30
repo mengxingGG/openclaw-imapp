@@ -4,38 +4,6 @@ import com.google.gson.annotations.SerializedName
 
 // ==================== Auth Models ====================
 
-data class QrCodeRequest(
-    @SerializedName("device_name") val deviceName: String,
-    @SerializedName("device_id") val deviceId: String? = null,
-)
-
-data class QrCodeResponse(
-    @SerializedName("session_key") val sessionKey: String,
-    @SerializedName("qr_url") val qrUrl: String,
-    @SerializedName("qr_image") val qrImage: String,  // base64 data URL
-    @SerializedName("expires_at") val expiresAt: Long,
-)
-
-data class PollRequest(
-    @SerializedName("session_key") val sessionKey: String,
-)
-
-data class GetTokenRequest(
-    @SerializedName("session_key") val sessionKey: String,
-)
-
-data class PollResponse(
-    val status: String,  // waiting | scanned | confirmed | expired
-    val message: String,
-    @SerializedName("sessionToken") val sessionToken: String? = null,
-    val user: UserInfo? = null,
-)
-
-data class GetTokenResponse(
-    val token: String,
-    val user: UserInfo? = null,
-)
-
 data class UserInfo(
     val id: String,
     val name: String,
@@ -73,6 +41,7 @@ data class VerifyTokenResponse(
 data class MessageHistoryRequest(
     val limit: Int = 50,
     val before: String? = null,
+    val after: Long? = null,  // 增量同步：只返回 timestamp > after 的消息
 )
 
 data class MessageHistoryResponse(
@@ -177,7 +146,7 @@ data class WsError(
 // ==================== Local Config ====================
 
 data class ServerConfig(
-    val serverUrl: String,       // e.g. http://your-server:3100
+    val serverUrl: String,       // e.g. http://122.51.4.46:3100
     val sessionToken: String?,
     val userId: String?,
     val userName: String?,

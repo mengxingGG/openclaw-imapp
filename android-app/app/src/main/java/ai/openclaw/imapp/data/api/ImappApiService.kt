@@ -9,15 +9,6 @@ interface ImappApiService {
 
     // ==================== Auth ====================
 
-    @POST("auth/qrcode")
-    suspend fun getQrCode(@Body request: QrCodeRequest): Response<QrCodeResponse>
-
-    @POST("auth/poll")
-    suspend fun pollStatus(@Body request: PollRequest): Response<PollResponse>
-
-    @POST("auth/get-token")
-    suspend fun getTokenBySessionKey(@Body request: GetTokenRequest): Response<GetTokenResponse>
-
     @POST("auth/verify")
     suspend fun verifySession(@Body request: VerifyRequest): Response<VerifyResponse>
 

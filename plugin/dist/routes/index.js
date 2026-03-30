@@ -112,13 +112,11 @@ export function createImappRoutes(channelRuntime, appConfig) {
                 return res.status(401).json({ error: session.error || 'Invalid token' });
             }
 
-            const { limit = 50, before } = req.body;
-
-            // 从 OpenClaw session 文件读取真实对话记录
-            const messages = await getSessionMessages(channelRuntime, appConfig, { limit, before });
+            const { limit = 20, before, after } = req.body;
+            const messages = await getMessagesFromDb({ limit: Math.min(limit, 50), before, after });
             res.json({
                 messages,
-                has_more: messages.length === limit,
+                has_more: messages.length === Math.min(limit, 50),
             });
         }
         catch (err) {
@@ -420,98 +418,62 @@ export function createImappRoutes(channelRuntime, appConfig) {
 }
 
 /**
- * 从 OpenClaw session JSONL 文件读取真实对话记录
+ * 从 SQLite 读取消息（不再读 JSONL）
+ * 支持增量同步（after）和向前翻页（before）
  */
-async function getSessionMessages(runtime, cfg, { limit = 50, before }) {
-    const fs = await import('node:fs');
-    const path = await import('node:path');
+const MAX_MESSAGES = 1000;
 
-    if (!runtime || !cfg) {
-        // fallback 到本地 SQLite
-        const db = await getDb();
-        const rows = await db.all('SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at DESC LIMIT ?', 'main', limit);
+async function getMessagesFromDb({ limit = 20, before, after } = {}) {
+    const db = await getDb();
+    const clampedLimit = Math.min(Math.max(limit, 1), 50);
+
+    // 增量同步：只返回 after 之后的新消息
+    if (after) {
+        const afterTs = typeof after === 'number' ? after : parseInt(after) || 0;
+        const rows = await db.all(
+            'SELECT * FROM messages WHERE conversation_id = ? AND created_at > ? ORDER BY created_at ASC LIMIT ?',
+            'main', afterTs, clampedLimit
+        );
+        return rows.map(normalizeMessageRow);
+    }
+
+    // 向前翻页：返回 before 之前的消息（按时间倒序取，再翻转）
+    if (before) {
+        const beforeTs = typeof before === 'number' ? before : parseInt(before) || 0;
+        const rows = await db.all(
+            'SELECT * FROM messages WHERE conversation_id = ? AND created_at < ? ORDER BY created_at DESC LIMIT ?',
+            'main', beforeTs, clampedLimit
+        );
         return rows.map(normalizeMessageRow).reverse();
     }
 
+    // 默认：返回最新的消息
+    const rows = await db.all(
+        'SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at DESC LIMIT ?',
+        'main', clampedLimit
+    );
+    return rows.map(normalizeMessageRow).reverse();
+}
+
+/**
+ * 清理超出上限的旧消息（保留最新 MAX_MESSAGES 条）
+ */
+async function trimMessages() {
     try {
-        const storePath = runtime.session.resolveStorePath(cfg.session?.store, { agentId: 'main' });
-        // 找到最新的 session 文件
-        const sessionDir = path.dirname(storePath);
-        if (!fs.existsSync(sessionDir)) {
-            return [];
-        }
-
-        const files = fs.readdirSync(sessionDir)
-            .filter(f => f.endsWith('.jsonl'))
-            .map(f => ({ name: f, mtime: fs.statSync(path.join(sessionDir, f)).mtimeMs }))
-            .sort((a, b) => b.mtime - a.mtime);
-
-        if (files.length === 0) return [];
-
-        // 只读取最新的 session 文件（当前活跃对话）
-        const latestFile = files[0];
-        const filePath = path.join(sessionDir, latestFile.name);
-        const content = fs.readFileSync(filePath, 'utf-8');
-        const allMessages = [];
-        for (const line of content.split('\n')) {
-                if (!line.trim()) continue;
-                try {
-                    const obj = JSON.parse(line);
-                    if (obj.type !== 'message') continue;
-                    const msg = obj.message;
-                    if (!msg || !['user', 'assistant'].includes(msg.role)) continue;
-
-                    const contentList = msg.content;
-                    let text = '';
-                    if (typeof contentList === 'string') {
-                        text = contentList;
-                    } else if (Array.isArray(contentList)) {
-                        // 只取 text 类型，跳过 thinking/toolCall/toolResult
-                        const textParts = contentList.filter(c => c.type === 'text' && c.text).map(c => c.text);
-                        text = textParts.join('\n');
-                    }
-                    if (!text.trim()) continue;
-
-                    // 过滤 OpenClaw 内部消息（心跳、系统消息、relevant-memories 等）
-                    const trimmed = text.trim();
-                    if (trimmed.startsWith('HEARTBEAT_OK') || trimmed === 'NO_REPLY') continue;
-                    if (trimmed.startsWith('Read HEARTBEAT.md')) continue;
-                    if (trimmed.startsWith('<relevant-memories>') || trimmed.startsWith('[UNTRUSTED DATA')) continue;
-                    if (/^Conversation info \(untrusted metadata\)/.test(trimmed)) continue;
-                    if (/^System:/.test(trimmed)) continue;
-                    if (/^\[Fri|Mon|Tue|Wed|Thu|Sat|Sun 2026/.test(trimmed)) continue;
-                    // 跳过纯工具调用的 assistant 消息（没有实际文本内容，只有 thinking）
-                    if (msg.role === 'assistant' && trimmed.length < 2) continue;
-
-                    const ts = obj.timestamp ? new Date(obj.timestamp).getTime() : 0;
-
-                    allMessages.push({
-                        id: obj.id || `sess-${Date.now()}-${Math.random().toString(36).slice(2,6)}`,
-                        from: msg.role === 'assistant' ? 'agent' : 'user',
-                        timestamp: ts,
-                        content: { type: 'text', text: text.trim() },
-                        read: true,
-                    });
-                } catch {}
-            }
-
-        // 按时间排序去重
-        allMessages.sort((a, b) => a.timestamp - b.timestamp);
-
-        // 过滤 before
-        if (before) {
-            const beforeTs = typeof before === 'number' ? before : parseInt(before) || 0;
-            const idx = allMessages.findIndex(m => m.timestamp >= beforeTs);
-            if (idx > 0) allMessages.splice(0, idx);
-        }
-
-        // 返回最新的 limit 条
-        return allMessages.slice(-limit);
-    } catch (err) {
-        logger.error(`getSessionMessages error: ${err}`);
-        // fallback
         const db = await getDb();
-        const rows = await db.all('SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at DESC LIMIT ?', 'main', limit);
-        return rows.map(normalizeMessageRow).reverse();
+        const row = await db.get('SELECT COUNT(*) as cnt FROM messages WHERE conversation_id = ?', 'main');
+        const count = row?.cnt || 0;
+        if (count > MAX_MESSAGES) {
+            const deleteCount = count - MAX_MESSAGES;
+            await db.run(
+                'DELETE FROM messages WHERE id IN (SELECT id FROM messages WHERE conversation_id = ? ORDER BY created_at ASC LIMIT ?)',
+                'main', deleteCount
+            );
+            logger.info(`Trimmed ${deleteCount} old messages (kept ${MAX_MESSAGES})`);
+        }
+    } catch (err) {
+        logger.warn(`trimMessages error: ${err}`);
     }
 }
+
+export { trimMessages };

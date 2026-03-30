@@ -38,4 +38,10 @@ class ApiClientFactory @Inject constructor(private val gson: Gson) {
         }
         return _api!!
     }
+
+    /** 清除缓存，强制下次重建 API 实例 */
+    fun resetApi() {
+        currentBaseUrl = ""
+        _api = null
+    }
 }

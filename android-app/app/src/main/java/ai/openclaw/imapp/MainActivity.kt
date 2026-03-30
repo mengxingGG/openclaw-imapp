@@ -9,6 +9,8 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
@@ -21,7 +23,6 @@ import ai.openclaw.imapp.ui.login.LoginScreen
 import ai.openclaw.imapp.ui.login.LoginViewModel
 import ai.openclaw.imapp.ui.settings.SettingsScreen
 import ai.openclaw.imapp.ui.theme.ImappTheme
-import ai.openclaw.imapp.service.ImappKeepAliveService
 import ai.openclaw.imapp.data.api.ConnectionState
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
@@ -38,24 +39,46 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             ImappTheme {
-                Surface(modifier = Modifier.fillMaxSize()) {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = androidx.compose.material3.MaterialTheme.colorScheme.background,
+                ) {
                     val navController = rememberNavController()
                     
                     // 共享的 LoginViewModel
                     val loginViewModel: LoginViewModel = hiltViewModel()
                     
-                    NavHost(navController = navController, startDestination = "splash") {
+                    NavHost(
+                        navController = navController,
+                        startDestination = "splash",
+                        enterTransition = { EnterTransition.None },
+                        exitTransition = { ExitTransition.None },
+                        popEnterTransition = { EnterTransition.None },
+                        popExitTransition = { ExitTransition.None },
+                    ) {
                         composable("splash") {
                             SplashScreen(
-                                onNavigateToLogin = { navController.navigate("login") { popUpTo("splash") { inclusive = true } } },
-                                onNavigateToChat = { navController.navigate("chat") { popUpTo("splash") { inclusive = true } } },
+                                onNavigateToLogin = {
+                                    navController.navigate("login") {
+                                        launchSingleTop = true
+                                        popUpTo("splash") { inclusive = true }
+                                    }
+                                },
+                                onNavigateToChat = {
+                                    navController.navigate("chat") {
+                                        launchSingleTop = true
+                                        popUpTo("splash") { inclusive = true }
+                                    }
+                                },
                             )
                         }
                         composable("login") {
                             LoginScreen(
                                 onLoginSuccess = {
-                                    ImappKeepAliveService.start(this@MainActivity)
-                                    navController.navigate("chat") { popUpTo("login") { inclusive = true } }
+                                    navController.navigate("chat") {
+                                        launchSingleTop = true
+                                        popUpTo("login") { inclusive = true }
+                                    }
                                 },
                                 viewModel = loginViewModel,
                             )
@@ -69,7 +92,6 @@ class MainActivity : ComponentActivity() {
                             SettingsScreen(
                                 onBack = { navController.popBackStack() },
                                 onLogout = {
-                                    ImappKeepAliveService.stop(this@MainActivity)
                                     navController.navigate("login") {
                                         popUpTo(0) { inclusive = true }
                                     }

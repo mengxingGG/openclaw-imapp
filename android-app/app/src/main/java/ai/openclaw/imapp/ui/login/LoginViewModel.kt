@@ -13,7 +13,7 @@ import javax.inject.Inject
 data class LoginUiState(
     val serverUrl: String = "",
     val token: String = "",
-    val status: String = "idle",  // idle | loading | confirmed | error
+    val status: String = "idle",
     val errorMsg: String? = null,
 )
 
@@ -25,6 +25,8 @@ class LoginViewModel @Inject constructor(
 
     private val _uiState = MutableStateFlow(LoginUiState())
     val uiState: StateFlow<LoginUiState> = _uiState.asStateFlow()
+    private val _loginSuccess = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val loginSuccess: SharedFlow<Unit> = _loginSuccess.asSharedFlow()
 
     // null = still checking, true = valid session, false = no session
     val hasValidSession: Flow<Boolean?> = flow {
@@ -35,8 +37,14 @@ class LoginViewModel @Inject constructor(
             emit(false)
             return@flow
         }
-        val result = repository.verifySession(token)
-        emit(result.getOrNull()?.valid == true)
+        try {
+            val result = withTimeoutOrNull(10_000) {
+                repository.verifySession(token)
+            }
+            emit(result?.getOrNull()?.valid == true)
+        } catch (_: Exception) {
+            emit(false)
+        }
     }.flowOn(Dispatchers.IO)
 
     init {
@@ -81,11 +89,11 @@ class LoginViewModel @Inject constructor(
 
         viewModelScope.launch {
             try {
-                // 保存服务器地址
+                // 先保存服务器地址（必须等写完再读取）
                 configStore.saveServerUrl(serverUrl)
 
-                // 验证 Token
-                val result = repository.verifyToken(token)
+                // 验证 Token（直接传入 serverUrl，避免从 DataStore 读取竞态）
+                val result = repository.verifyToken(token, serverUrl = serverUrl)
                 if (result.isSuccess) {
                     val response = result.getOrThrow()
                     val isValid = response.valid || (response.success && (response.user != null || response.userId != null))
@@ -95,7 +103,13 @@ class LoginViewModel @Inject constructor(
                             response.userId ?: response.user?.id ?: "",
                             response.userName ?: response.user?.name ?: ""
                         )
-                        _uiState.update { it.copy(status = "confirmed") }
+                        viewModelScope.launch(Dispatchers.IO) {
+                            withTimeoutOrNull(5_000) {
+                                repository.syncCurrentFcmToken()
+                            }
+                        }
+                        _uiState.update { it.copy(status = "idle", errorMsg = null) }
+                        _loginSuccess.tryEmit(Unit)
                     } else {
                         _uiState.update { it.copy(status = "error", errorMsg = response.errorMsg ?: response.error ?: "验证失败") }
                     }

@@ -15,8 +15,8 @@ android {
         applicationId = "ai.openclaw.imapp"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.0.1"
+        versionCode = 3
+        versionName = "1.2.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
             useSupportLibrary = true
@@ -80,12 +80,6 @@ dependencies {
     implementation(libs.gson)
     // Image loading
     implementation(libs.coil.compose)
-    // Camera & QR
-    implementation(libs.androidx.camera.core)
-    implementation(libs.androidx.camera.camera2)
-    implementation(libs.androidx.camera.lifecycle)
-    implementation(libs.androidx.camera.view)
-    implementation(libs.mlkit.barcode.scanning)
     // DI
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
@@ -93,11 +87,20 @@ dependencies {
     // Firebase
     implementation(platform(libs.firebase.bom))
     implementation(libs.firebase.messaging)
-    implementation(libs.firebase.analytics)
     // Coroutines
     implementation(libs.kotlinx.coroutines.android)
     // Permissions
     implementation(libs.accompanist.permissions)
+    // Markdown rendering (Markwon)
+    implementation("io.noties.markwon:core:4.6.2") {
+        exclude(group = "org.jetbrains", module = "annotations")
+    }
+    implementation("io.noties.markwon:ext-strikethrough:4.6.2") {
+        exclude(group = "org.jetbrains", module = "annotations")
+    }
+    implementation("io.noties.markwon:ext-tables:4.6.2") {
+        exclude(group = "org.jetbrains", module = "annotations")
+    }
 
     debugImplementation(libs.androidx.ui.tooling)
 }

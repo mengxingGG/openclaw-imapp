@@ -1,6 +1,11 @@
 package ai.openclaw.imapp.ui.settings
 
 import ai.openclaw.imapp.data.model.Device
+import ai.openclaw.imapp.service.NotificationHelper
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
+import android.provider.Settings
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -13,6 +18,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -79,6 +85,23 @@ fun SettingsScreen(
             }
 
             item {
+                // ==================== 通知与权限设置 ====================
+                Text("通知与权限", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "确保消息通知正常接收，建议完成以下设置。",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 13.sp,
+                )
+            }
+
+            item { NotificationPermissionCard() }
+
+            item { BatteryOptimizationCard() }
+
+            item { AutoStartCard() }
+
+            item {
+                Spacer(Modifier.height(12.dp))
                 Text("设备管理", style = MaterialTheme.typography.titleMedium)
                 Text(
                     "查看已登录设备，及时清理不再使用的终端。",
@@ -119,7 +142,7 @@ fun SettingsScreen(
         AlertDialog(
             onDismissRequest = { showLogoutDialog = false },
             title = { Text("确认退出") },
-            text = { Text("退出后需要重新扫码登录") },
+            text = { Text("退出后需要重新输入服务器地址和 Token") },
             confirmButton = {
                 TextButton(onClick = { viewModel.logout(onLogout) }) { Text("退出", color = MaterialTheme.colorScheme.error) }
             },
@@ -195,5 +218,166 @@ private fun DeviceCard(device: Device, onRevoke: () -> Unit) {
             },
             dismissButton = { TextButton(onClick = { showConfirm = false }) { Text("取消") } },
         )
+    }
+}
+
+// ==================== 权限引导卡片 ====================
+
+/** 通知权限卡片 */
+@Composable
+private fun NotificationPermissionCard() {
+    val context = LocalContext.current
+    val isEnabled = NotificationHelper.isNotificationEnabled(context)
+
+    PermissionGuideCard(
+        icon = if (isEnabled) Icons.Default.NotificationsActive else Icons.Default.NotificationsOff,
+        iconTint = if (isEnabled) Color(0xFF4CAF50) else MaterialTheme.colorScheme.error,
+        title = "消息通知",
+        description = if (isEnabled) "通知权限已开启" else "通知权限未开启，将无法收到消息提醒",
+        actionLabel = if (isEnabled) null else "去开启",
+        onClick = {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                    putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                })
+            } else {
+                context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                    data = Uri.parse("package:${context.packageName}")
+                })
+            }
+        },
+        isOk = isEnabled,
+    )
+}
+
+/** 电池优化白名单卡片 */
+@Composable
+private fun BatteryOptimizationCard() {
+    val context = LocalContext.current
+
+    PermissionGuideCard(
+        icon = Icons.Default.BatteryAlert,
+        iconTint = Color(0xFFFF9800),
+        title = "电池优化",
+        description = "建议将 OpenClaw 加入电池优化白名单，避免后台被清理",
+        actionLabel = "去设置",
+        onClick = {
+            try {
+                context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+            } catch (_: Exception) {
+                context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                    data = Uri.parse("package:${context.packageName}")
+                })
+            }
+        },
+        isOk = false,
+    )
+}
+
+/** 自启动权限卡片 */
+@Composable
+private fun AutoStartCard() {
+    val context = LocalContext.current
+    val manufacturer = Build.MANUFACTURER.lowercase()
+
+    PermissionGuideCard(
+        icon = Icons.Default.PowerSettingsNew,
+        iconTint = Color(0xFF2196F3),
+        title = "自启动权限",
+        description = "允许 OpenClaw 开机后自动启动并保持连接",
+        actionLabel = "去设置",
+        onClick = {
+            val intent = when {
+                manufacturer.contains("xiaomi") || manufacturer.contains("redmi") -> {
+                    Intent("miui.intent.action.APP_PERM_EDITOR").apply {
+                        putExtra("extra_pkgname", context.packageName)
+                    }
+                }
+                manufacturer.contains("huawei") || manufacturer.contains("honor") -> {
+                    Intent().apply {
+                        component = android.content.ComponentName(
+                            "com.huawei.systemmanager",
+                            "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity"
+                        )
+                    }
+                }
+                manufacturer.contains("oppo") || manufacturer.contains("realme") -> {
+                    Intent().apply {
+                        component = android.content.ComponentName(
+                            "com.coloros.safecenter",
+                            "com.coloros.safecenter.permission.startup.StartupAppListActivity"
+                        )
+                    }
+                }
+                manufacturer.contains("vivo") -> {
+                    Intent().apply {
+                        component = android.content.ComponentName(
+                            "com.vivo.permissionmanager",
+                            "com.vivo.permissionmanager.activity.BgStartUpManagerActivity"
+                        )
+                    }
+                }
+                else -> {
+                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                        data = Uri.parse("package:${context.packageName}")
+                    }
+                }
+            }
+            try {
+                context.startActivity(intent)
+            } catch (_: Exception) {
+                context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                    data = Uri.parse("package:${context.packageName}")
+                })
+            }
+        },
+        isOk = false,
+    )
+}
+
+/** 通用权限引导卡片 */
+@Composable
+private fun PermissionGuideCard(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    iconTint: Color,
+    title: String,
+    description: String,
+    actionLabel: String?,
+    onClick: () -> Unit,
+    isOk: Boolean,
+) {
+    ElevatedCard(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.elevatedCardColors(
+            containerColor = MaterialTheme.colorScheme.surface,
+        ),
+    ) {
+        Row(
+            modifier = Modifier.padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Surface(
+                modifier = Modifier.size(40.dp),
+                color = iconTint.copy(alpha = 0.12f),
+                shape = CircleShape,
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(icon, contentDescription = null, tint = iconTint, modifier = Modifier.size(20.dp))
+                }
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(title, fontSize = 15.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Medium)
+                Text(description, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 16.sp)
+            }
+            if (actionLabel != null) {
+                TextButton(onClick = onClick) {
+                    Text(actionLabel, fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
+                }
+            } else {
+                Icon(Icons.Default.CheckCircle, contentDescription = "已完成", tint = Color(0xFF4CAF50))
+            }
+        }
     }
 }

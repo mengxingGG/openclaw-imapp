@@ -2,26 +2,32 @@
  * OpenClaw IMApp 插件入口
  *
  * 专属 App 即时通讯系统，支持：
- * - 扫码登录
+ * - Token 登录
  * - WebSocket 实时消息
  * - 媒体传输
  * - 本地存储
  * - 与 OpenClaw Agent 深度集成
  */
-import { keepHttpServerTaskAlive } from 'openclaw/plugin-sdk';
+import { keepHttpServerTaskAlive } from 'openclaw/plugin-sdk/channel-lifecycle';
+import { buildChannelConfigSchema } from 'openclaw/plugin-sdk/channel-config-primitives';
+import { z } from 'zod';
 import { createServer } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import express from 'express';
-import { initDatabase, closeDatabase } from './db/index.js';
-import { initWebSocket, sendToUser, getOnlineCount, getOnlineUserIds } from './websocket/index.js';
+import fs from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { initDatabase, closeDatabase, getDb, getMediaPath } from './db/index.js';
+import { initWebSocket, closeWebSocketServer, sendToUser, getOnlineCount, getOnlineUserIds } from './websocket/index.js';
 import { createImappRoutes } from './routes/index.js';
 import { createToken, getBaseUrl, setBaseUrl } from './auth/index.js';
+import { extForMime, mediaDirForMime, mimeForExt } from './media/index.js';
 import { logger } from './util/logger.js';
 // 运行时状态（模块级，单账号）
 let pluginRuntime = null;
 let appConfig = null;
 let httpServer = null;
+let retentionTimer = null;
 // ==================== ChannelPlugin 定义 ====================
 export const imappPlugin = {
     id: 'openclaw-imapp',
@@ -31,21 +37,14 @@ export const imappPlugin = {
         selectionLabel: 'openclaw-imapp (专属App)',
         docsPath: '/channels/openclaw-imapp',
         docsLabel: 'openclaw-imapp',
-        blurb: '专属 App 即时通讯，扫码登录，本地存储',
+        blurb: '专属 App 即时通讯，Token 登录，本地存储',
         order: 80,
     },
-    configSchema: {
-        schema: {
-            type: 'object',
-            additionalProperties: false,
-            properties: {
-                baseUrl: {
-                    type: 'string',
-                    description: '服务器公网地址，如 http://1.2.3.4:3100，用于生成登录二维码 URL',
-                },
-            },
-        },
-    },
+    configSchema: buildChannelConfigSchema(
+        z.object({
+            baseUrl: z.string().optional().describe('服务器公网地址，如 http://1.2.3.4:3100，供移动端输入后连接'),
+        }).passthrough()
+    ),
     capabilities: {
         chatTypes: ['direct'],
         media: true,
@@ -116,34 +115,107 @@ export const imappPlugin = {
         },
         sendMedia: async (ctx) => {
             const userId = ctx.to.replace('@imapp', '');
+            const mediaUrl = ctx.mediaUrl || '';
+
+            // 判断是本地路径还是远程 URL
+            const isRemote = /^https?:\/\//i.test(mediaUrl);
+            const isLocalPath = !isRemote && mediaUrl.length > 0;
+
+            let fileUrl = mediaUrl;
+            let mediaType = 'file';
+            let filename = '';
+            let fileSize = 0;
+
+            if (isRemote) {
+                // 远程 URL：先下载到媒体目录，再当本地文件处理
+                try {
+                    const ext = mediaUrl.split('/').pop()?.match(/\.[^.]+$/)?.[0] || '';
+                    const response = await fetch(mediaUrl);
+                    if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    const arrayBuffer = await response.arrayBuffer();
+                    const buffer = Buffer.from(arrayBuffer);
+                    fileSize = buffer.length;
+                    filename = decodeURIComponent(mediaUrl.split('/').pop()) || 'file';
+                    const mimeType = mimeForExt(ext) || 'application/octet-stream';
+                    mediaType = mimeType.startsWith('image/') ? 'image'
+                        : mimeType.startsWith('audio/') ? 'voice'
+                        : mimeType.startsWith('video/') ? 'video'
+                        : 'file';
+                    const fileId = `${randomUUID()}.${extForMime(mimeType)}`;
+                    const dir = mediaDirForMime(mimeType);
+                    const storagePath = getMediaPath(path.join(dir, fileId));
+                    await fs.promises.writeFile(storagePath, buffer);
+                    const db = await getDb();
+                    await db.run(`
+                        INSERT OR REPLACE INTO media_files (id, type, filename, mime_type, size, storage_path, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    `, fileId, mediaType, filename, mimeType, fileSize, storagePath, Date.now());
+                    fileUrl = `/imapp/media/${fileId}`;
+                    logger.info(`Remote media downloaded: ${filename} (${fileSize} bytes) -> ${fileId}`);
+                } catch (err) {
+                    logger.error(`Failed to download remote media ${mediaUrl}: ${err}`);
+                    return { channel: 'openclaw-imapp', messageId: '', error: new Error(`无法下载远程文件: ${err.message}`) };
+                }
+            } else if (isLocalPath) {
+                // 本地文件路径：读取并保存到媒体目录
+                try {
+                    const buffer = await fs.promises.readFile(mediaUrl);
+                    fileSize = buffer.length;
+                    filename = path.basename(mediaUrl);
+                    const mimeType = mimeForExt(path.extname(filename)) || 'application/octet-stream';
+                    mediaType = mimeType.startsWith('image/') ? 'image'
+                        : mimeType.startsWith('audio/') ? 'voice'
+                        : mimeType.startsWith('video/') ? 'video'
+                        : 'file';
+                    const fileId = `${randomUUID()}.${extForMime(mimeType)}`;
+                    const dir = mediaDirForMime(mimeType);
+                    const storagePath = getMediaPath(path.join(dir, fileId));
+                    await fs.promises.writeFile(storagePath, buffer);
+                    const db = await getDb();
+                    await db.run(`
+                        INSERT OR REPLACE INTO media_files (id, type, filename, mime_type, size, storage_path, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    `, fileId, mediaType, filename, mimeType, fileSize, storagePath, Date.now());
+                    fileUrl = `/imapp/media/${fileId}`;
+                    logger.info(`Local file uploaded: ${filename} (${fileSize} bytes) -> ${fileId}`);
+                } catch (err) {
+                    logger.error(`Failed to process local media file ${mediaUrl}: ${err}`);
+                    return { channel: 'openclaw-imapp', messageId: '', error: new Error(`无法读取本地文件: ${err.message}`) };
+                }
+            }
+
+            const content = {
+                type: mediaType,
+                url: fileUrl,
+                text: ctx.text || null,
+                filename: filename || null,
+                size: fileSize || null,
+            };
+
             const payload = {
                 type: 'message',
                 from: 'agent',
                 timestamp: Date.now(),
-                content: {
-                    type: ctx.mediaUrl ? 'image' : 'text',
-                    url: ctx.mediaUrl,
-                    text: ctx.text,
-                },
+                content,
             };
+
             // 存储媒体消息到数据库
             try {
-                const db = await import('./db/index.js').then(m => m.getDb());
-                const replyId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+                const db = await getDb();
+                const replyId = `msg-${Date.now()}-${randomUUID().slice(0, 8)}`;
                 await db.run(`
                     INSERT INTO messages (id, conversation_id, from_type, from_id, content_type, content, created_at)
                     VALUES (?, 'main', 'agent', 'agent', ?, ?, ?)
-                `, replyId, ctx.mediaUrl ? 'image' : 'text', JSON.stringify({ type: ctx.mediaUrl ? 'image' : 'text', text: ctx.text, url: ctx.mediaUrl }), Date.now());
+                `, replyId, mediaType, JSON.stringify(content), Date.now());
             } catch (err) {
-                const { logger: log } = await import('./util/logger.js');
-                log.warn(`Failed to persist outbound media: ${err}`);
+                logger.warn(`Failed to persist outbound media: ${err}`);
             }
+
             const onlineIds = getOnlineUserIds();
             if (onlineIds.has(userId)) {
                 sendToUser(userId, payload);
-            }
-            else {
-                await sendFcmNotification(userId, ctx.text || '[媒体消息]');
+            } else {
+                await sendFcmNotification(userId, ctx.text || `[${mediaType}] ${filename || '文件'}`);
             }
             return { channel: 'openclaw-imapp', messageId: `msg-${Date.now()}` };
         },
@@ -184,9 +256,11 @@ export const imappPlugin = {
                 pluginRuntime = ctx.channelRuntime;
             if (ctx.cfg)
                 appConfig = ctx.cfg;
-            initDatabase();
+            const { pruneExpiredMessages } = await import('./db/index.js');
+            await initDatabase();
+            await pruneExpiredMessages();
             logger.info('Database initialized');
-            // 设置公网 baseUrl（用于二维码 URL 生成）
+            // 设置公网 baseUrl（供移动端连接）
             // 配置路径：channels.openclaw-imapp
             const channelCfg = ctx.cfg?.['channels.openclaw-imapp'];
             const configuredBaseUrl = channelCfg?.baseUrl;
@@ -232,12 +306,25 @@ export const imappPlugin = {
             });
             ctx.log?.info?.(`[imapp] Gateway started on port ${port}`);
             logger.info(`IMApp gateway started on port ${port}`);
+            if (retentionTimer) {
+                clearInterval(retentionTimer);
+            }
+            retentionTimer = setInterval(() => {
+                pruneExpiredMessages().catch((err) => {
+                    logger.warn(`Failed to prune expired indexed messages: ${err}`);
+                });
+            }, 6 * 60 * 60 * 1000);
             // 保持运行直到 gateway 关闭信号
             await keepHttpServerTaskAlive({
                 server: httpServer,
                 abortSignal: ctx.abortSignal,
                 onAbort: () => {
                     logger.info('IMApp: abort signal received, closing server...');
+                    if (retentionTimer) {
+                        clearInterval(retentionTimer);
+                        retentionTimer = null;
+                    }
+                    closeWebSocketServer();
                     httpServer?.close();
                     closeDatabase();
                     pluginRuntime = null;
@@ -257,20 +344,15 @@ export const imappPlugin = {
                 });
                 httpServer = null;
             }
+            if (retentionTimer) {
+                clearInterval(retentionTimer);
+                retentionTimer = null;
+            }
+            closeWebSocketServer();
             closeDatabase();
             pluginRuntime = null;
             appConfig = null;
         },
-        // ==================== 扫码登录 ====================
-        loginWithQrStart: async () => ({
-            qrDataUrl: '',
-            message: '当前版本暂未完成二维码登录链路，请使用 Token 登录。',
-            sessionKey: 'token-login-required',
-        }),
-        loginWithQrWait: async () => ({
-            connected: false,
-            message: '当前版本暂未完成二维码登录链路，请使用 Token 登录。',
-        }),
     },
     // ==================== 认证 ====================
     auth: {
@@ -286,7 +368,7 @@ export const imappPlugin = {
             
             if (subCmd === 'list' || subCmd === 'ls') {
                 // 列出所有设备
-                const devices = listDevices();
+                const devices = await listDevices();
                 log?.(`\n📱 已登录设备 (共 ${devices.length}/5)：\n`);
                 log?.('  设备码     设备名称              最后活跃时间');
                 log?.('  --------   ------------------   ------------------');
@@ -305,7 +387,7 @@ export const imappPlugin = {
                     log?.('用法: openclaw channels login --channel openclaw-imapp revoke <token或设备码>');
                     return;
                 }
-                const result = revokeToken(target);
+                const result = await revokeToken(target);
                 if (result.success) {
                     log?.(`\n✅ ${result.message}\n`);
                 } else {
@@ -317,7 +399,7 @@ export const imappPlugin = {
             if (subCmd === 'create' || subCmd === 'add' || !subCmd) {
                 // 创建新 Token
                 const deviceName = parts.slice(1).join(' ') || 'Android Device';
-                const result = createToken(deviceName, accountId || null);
+                const result = await createToken(deviceName, accountId || null);
                 
                 if (!result.success) {
                     log?.(`\n❌ ${result.error}\n`);
@@ -375,8 +457,8 @@ Token：  ${result.token}
 async function sendFcmNotification(userId, text) {
     try {
         const { getDb } = await import('./db/index.js');
-        const db = getDb();
-        const tokens = db.prepare('SELECT fcm_token FROM fcm_tokens WHERE user_id = ?').all(userId);
+        const db = await getDb();
+        const tokens = await db.all('SELECT fcm_token FROM fcm_tokens WHERE user_id = ?', userId);
         if (!tokens.length)
             return;
         const { getFcmServerKey } = await import('./auth/index.js');

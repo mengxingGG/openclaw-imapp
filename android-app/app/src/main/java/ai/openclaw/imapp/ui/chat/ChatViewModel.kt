@@ -267,7 +267,8 @@ class ChatViewModel @Inject constructor(
                 messages = updatedMessages,
                 streamingMessageId = if (msg.stream == "continue") messageId else null,
                 isTyping = if (isFinalMessage) false else state.isTyping,
-                typingStartedAt = if (isFinalMessage) null else state.typingStartedAt,
+                // 收到内容时刷新 typingStartedAt，避免显示"已等待 X 秒"（实际是距离上次 typing 开始而非距离最新内容到达）
+                typingStartedAt = if (isFinalMessage) null else if (msg.stream == "continue") System.currentTimeMillis() else state.typingStartedAt,
             )
         }
 

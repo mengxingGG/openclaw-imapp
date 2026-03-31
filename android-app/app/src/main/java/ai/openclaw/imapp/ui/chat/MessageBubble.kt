@@ -372,6 +372,8 @@ fun TypingIndicator(typingStartedAt: Long?) {
             delay(1000)
         }
     }
+    // 防御性检查：typingStartedAt 为 null 时不显示"等待"文字
+    if (typingStartedAt == null) return
 
     val subText = when {
         elapsedSec >= 60 -> "已等待 ${elapsedSec / 60} 分 ${elapsedSec % 60} 秒..."

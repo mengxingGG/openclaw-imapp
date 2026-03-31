@@ -95,6 +95,17 @@ dependencies {
     implementation("io.noties.markwon:core:4.6.2") {
         exclude(group = "org.jetbrains", module = "annotations")
     }
+    // CameraX for QR code scanning
+    implementation("androidx.camera:camera-core:1.3.4")
+    implementation("androidx.camera:camera-camera2:1.3.4")
+    implementation("androidx.camera:camera-lifecycle:1.3.4")
+    implementation("androidx.camera:camera-view:1.3.4")
+    // MLKit Barcode Scanning
+    implementation("com.google.mlkit:barcode-scanning:17.3.0")
+    // Room Database
+    implementation("androidx.room:room-runtime:2.6.1")
+    implementation("androidx.room:room-ktx:2.6.1")
+    ksp("androidx.room:room-compiler:2.6.1")
     implementation("io.noties.markwon:ext-strikethrough:4.6.2") {
         exclude(group = "org.jetbrains", module = "annotations")
     }

@@ -52,6 +52,45 @@ function normalizeMessageRow(row) {
     };
 }
 
+async function getIndexedMessages({ limit = 50, before, after }) {
+    const db = await getDb();
+    const clauses = ['conversation_id = ?'];
+    const params = ['main'];
+    if (before) {
+        clauses.push('created_at < ?');
+        params.push(typeof before === 'number' ? before : parseInt(before) || 0);
+    }
+    if (after) {
+        clauses.push('created_at > ?');
+        params.push(typeof after === 'number' ? after : parseInt(after) || 0);
+    }
+    params.push(limit + 1);
+    const rows = await db.all(`
+        SELECT *
+        FROM messages
+        WHERE ${clauses.join(' AND ')}
+        ORDER BY created_at DESC
+        LIMIT ?
+    `, ...params);
+    const hasMore = rows.length > limit;
+    const messages = rows
+        .slice(0, limit)
+        .map(normalizeMessageRow)
+        .reverse();
+    return { messages, hasMore };
+}
+
+async function persistIndexedMessages(messages) {
+    if (!messages.length) return;
+    const db = await getDb();
+    for (const message of messages) {
+        await db.run(`
+            INSERT OR IGNORE INTO messages (id, conversation_id, from_type, from_id, content_type, content, created_at)
+            VALUES (?, 'main', ?, ?, ?, ?, ?)
+        `, message.id, message.from, message.from === 'user' ? 'default' : 'agent', message.content?.type || 'text', JSON.stringify(message.content || { type: 'text', text: '' }), message.timestamp || Date.now());
+    }
+}
+
 export function createImappRoutes(channelRuntime, appConfig) {
     const router = Router();
     router.post('/auth/verify', async (req, res) => {
@@ -112,11 +151,13 @@ export function createImappRoutes(channelRuntime, appConfig) {
                 return res.status(401).json({ error: session.error || 'Invalid token' });
             }
 
-            const { limit = 20, before, after } = req.body;
-            const messages = await getMessagesFromDb({ limit: Math.min(limit, 50), before, after });
+            const { limit = 50, before, after } = req.body;
+
+            // 优先读取轻量消息索引，必要时再回退到 OpenClaw session
+            const { messages, hasMore } = await getSessionMessages(channelRuntime, appConfig, { limit, before, after });
             res.json({
                 messages,
-                has_more: messages.length === Math.min(limit, 50),
+                has_more: hasMore,
             });
         }
         catch (err) {
@@ -301,7 +342,8 @@ export function createImappRoutes(channelRuntime, appConfig) {
             const dir = mediaDirForMime(mimeType);
             const storagePath = getMediaPath(path.join(dir, fileId));
             const body = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body || []);
-            fs.writeFileSync(storagePath, body);
+            // 异步写入，避免阻塞事件循环
+            await fs.promises.writeFile(storagePath, body);
 
             const db = await getDb();
             await db.run(`
@@ -340,7 +382,8 @@ export function createImappRoutes(channelRuntime, appConfig) {
             const fileId = `${randomUUID()}.${ext}`;
             const mediaPath = getMediaPath(path.join(mediaDirForMime(mimeType || 'application/octet-stream'), fileId));
             const buffer = Buffer.from(file, 'base64');
-            fs.writeFileSync(mediaPath, buffer);
+            // 异步写入，避免阻塞事件循环
+            await fs.promises.writeFile(mediaPath, buffer);
             const db = await getDb();
             await db.run(`
                 INSERT OR REPLACE INTO media_files (id, type, filename, mime_type, size, storage_path, created_at)
@@ -418,62 +461,9 @@ export function createImappRoutes(channelRuntime, appConfig) {
 }
 
 /**
- * 从 SQLite 读取消息（不再读 JSONL）
- * 支持增量同步（after）和向前翻页（before）
+ * 优先从轻量消息索引读取历史；当索引为空时，再从 OpenClaw session 回填
  */
-const MAX_MESSAGES = 1000;
-
-async function getMessagesFromDb({ limit = 20, before, after } = {}) {
-    const db = await getDb();
-    const clampedLimit = Math.min(Math.max(limit, 1), 50);
-
-    // 增量同步：只返回 after 之后的新消息
-    if (after) {
-        const afterTs = typeof after === 'number' ? after : parseInt(after) || 0;
-        const rows = await db.all(
-            'SELECT * FROM messages WHERE conversation_id = ? AND created_at > ? ORDER BY created_at ASC LIMIT ?',
-            'main', afterTs, clampedLimit
-        );
-        return rows.map(normalizeMessageRow);
-    }
-
-    // 向前翻页：返回 before 之前的消息（按时间倒序取，再翻转）
-    if (before) {
-        const beforeTs = typeof before === 'number' ? before : parseInt(before) || 0;
-        const rows = await db.all(
-            'SELECT * FROM messages WHERE conversation_id = ? AND created_at < ? ORDER BY created_at DESC LIMIT ?',
-            'main', beforeTs, clampedLimit
-        );
-        return rows.map(normalizeMessageRow).reverse();
-    }
-
-    // 默认：返回最新的消息
-    const rows = await db.all(
-        'SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at DESC LIMIT ?',
-        'main', clampedLimit
-    );
-    return rows.map(normalizeMessageRow).reverse();
+async function getSessionMessages(runtime, cfg, { limit = 50, before, after }) {
+    // 只从轻量消息索引读取，不再回退读取 OpenClaw session 文件
+    return await getIndexedMessages({ limit, before, after });
 }
-
-/**
- * 清理超出上限的旧消息（保留最新 MAX_MESSAGES 条）
- */
-async function trimMessages() {
-    try {
-        const db = await getDb();
-        const row = await db.get('SELECT COUNT(*) as cnt FROM messages WHERE conversation_id = ?', 'main');
-        const count = row?.cnt || 0;
-        if (count > MAX_MESSAGES) {
-            const deleteCount = count - MAX_MESSAGES;
-            await db.run(
-                'DELETE FROM messages WHERE id IN (SELECT id FROM messages WHERE conversation_id = ? ORDER BY created_at ASC LIMIT ?)',
-                'main', deleteCount
-            );
-            logger.info(`Trimmed ${deleteCount} old messages (kept ${MAX_MESSAGES})`);
-        }
-    } catch (err) {
-        logger.warn(`trimMessages error: ${err}`);
-    }
-}
-
-export { trimMessages };

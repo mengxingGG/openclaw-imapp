@@ -311,7 +311,7 @@ fun ChatScreen(
                             onClick = {
                                 if (!isRecording) {
                                     if (audioPermission.status.isGranted) {
-                                        val file = File(context.cacheDir, "voice_${System.currentTimeMillis()}.amr")
+                                        val file = File(context.cacheDir, "voice_${System.currentTimeMillis()}.m4a")
                                         recordFile = file
                                         recordStartMs = System.currentTimeMillis()
                                         @Suppress("DEPRECATION")
@@ -321,8 +321,10 @@ fun ChatScreen(
                                             MediaRecorder()
                                         }
                                         mr.setAudioSource(MediaRecorder.AudioSource.MIC)
-                                        mr.setOutputFormat(MediaRecorder.OutputFormat.AMR_NB)
-                                        mr.setAudioEncoder(MediaRecorder.AudioEncoder.AMR_NB)
+                                        mr.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+                                        mr.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+                                        mr.setAudioEncodingBitRate(128000)
+                                        mr.setAudioSamplingRate(44100)
                                         mr.setOutputFile(file.absolutePath)
                                         mr.prepare()
                                         mr.start()

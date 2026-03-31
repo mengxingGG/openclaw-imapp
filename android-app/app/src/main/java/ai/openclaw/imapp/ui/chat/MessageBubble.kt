@@ -197,7 +197,13 @@ fun BubbleContent(
                     Column {
                         Text(content.filename ?: "视频", fontSize = 14.sp)
                         if (!isUser) {
-                            Text("点击下载", fontSize = 11.sp, color = Color.Gray)
+                            Row {
+                                if (content.size != null) {
+                                    Text(formatFileSize(content.size!!), fontSize = 11.sp, color = Color.Gray)
+                                    Text(" · ", fontSize = 11.sp, color = Color.Gray)
+                                }
+                                Text("点击下载", fontSize = 11.sp, color = Color.Gray)
+                            }
                         }
                     }
                 }

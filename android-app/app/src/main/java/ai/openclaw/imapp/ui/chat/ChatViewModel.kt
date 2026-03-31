@@ -354,7 +354,7 @@ class ChatViewModel @Inject constructor(
     fun sendVoiceMessage(audioBytes: ByteArray, durationMs: Long) {
         viewModelScope.launch {
             _uiState.update { it.copy(isUploading = true) }
-            val result = repository.uploadBytes(audioBytes, "audio/amr")
+            val result = repository.uploadBytes(audioBytes, "audio/mp4")
             _uiState.update { it.copy(isUploading = false) }
             result.getOrNull()?.let { upload ->
                 val msgId = UUID.randomUUID().toString()

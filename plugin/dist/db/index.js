@@ -6,12 +6,14 @@ import { createClient } from '@libsql/client';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
+import { pathToFileURL } from 'node:url';
 import { logger } from '../util/logger.js';
-const DB_DIR = process.platform === 'win32'
+const DB_DIR = process.env.IMAPP_DATA_DIR || (process.platform === 'win32'
     ? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'openclaw-imapp')
-    : '/var/lib/openclaw-imapp';
+    : '/var/lib/openclaw-imapp');
 const DB_PATH = path.join(DB_DIR, 'imapp.db');
 const MEDIA_DIR = path.join(DB_DIR, 'media');
+const MESSAGE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 let dbClient = null;
 
 class LibsqlWrapper {
@@ -72,7 +74,7 @@ export async function initDatabase() {
     }
     
     const client = createClient({
-        url: `file:${DB_PATH}`,
+        url: pathToFileURL(DB_PATH).href,
     });
     dbClient = new LibsqlWrapper(client);
 
@@ -105,6 +107,37 @@ export async function closeDatabase() {
  */
 export function getMediaPath(type) {
     return path.join(MEDIA_DIR, type);
+}
+
+export async function pruneExpiredMessages(now = Date.now()) {
+    const db = await getDb();
+    const cutoff = now - MESSAGE_RETENTION_MS;
+
+    // 1. 收集即将被删除的消息所关联的 media_file ids
+    const orphanedMediaRows = await db.all(
+        'SELECT id, storage_path FROM media_files WHERE message_id NOT IN (SELECT id FROM messages) AND message_id IS NOT NULL'
+    );
+    let mediaFreed = 0;
+    for (const media of orphanedMediaRows) {
+        try {
+            if (media.storage_path && fs.existsSync(media.storage_path)) {
+                fs.unlinkSync(media.storage_path);
+            }
+            await db.run('DELETE FROM media_files WHERE id = ?', media.id);
+            mediaFreed++;
+        } catch (e) {
+            logger.warn(`Failed to prune media ${media.id}: ${e.message}`);
+        }
+    }
+
+    // 2. 删除过期消息
+    const row = await db.get('SELECT COUNT(*) AS c FROM messages WHERE created_at < ?', cutoff);
+    const deleted = Number(row?.c || 0);
+    if (deleted > 0) {
+        await db.run('DELETE FROM messages WHERE created_at < ?', cutoff);
+        logger.info(`Pruned ${deleted} expired messages, freed ${mediaFreed} orphaned media files`);
+    }
+    return deleted;
 }
 /**
  * 创建所有表
@@ -169,24 +202,7 @@ async function createTables(db) {
     }
     await db.exec(`CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(token_hash)`);
     await db.exec(`CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)`);
-    // 登录请求表
-    await db.exec(`
-    CREATE TABLE IF NOT EXISTS login_requests (
-      id TEXT PRIMARY KEY,
-      device_id TEXT,
-      device_name TEXT,
-      qr_token TEXT NOT NULL UNIQUE,
-      status TEXT NOT NULL DEFAULT 'waiting',
-      confirmed_by TEXT,
-      resulting_session TEXT,
-      expires_at INTEGER NOT NULL,
-      created_at INTEGER NOT NULL,
-      FOREIGN KEY (confirmed_by) REFERENCES users(id),
-      FOREIGN KEY (resulting_session) REFERENCES sessions(id)
-    )
-  `);
-    await db.exec(`CREATE INDEX IF NOT EXISTS idx_login_qr_token ON login_requests(qr_token)`);
-    await db.exec(`CREATE INDEX IF NOT EXISTS idx_login_status ON login_requests(status)`);
+    await db.exec(`DROP TABLE IF EXISTS login_requests`);
     // 消息表
     await db.exec(`
     CREATE TABLE IF NOT EXISTS messages (
@@ -203,6 +219,7 @@ async function createTables(db) {
   `);
     await db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id, created_at DESC)`);
     await db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_context ON messages(context_token)`);
+    await db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at)`);
     // 媒体文件表
     await db.exec(`
     CREATE TABLE IF NOT EXISTS media_files (
@@ -250,7 +267,7 @@ async function createTables(db) {
     await db.run(`
     INSERT OR IGNORE INTO users (id, name, role, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?)
-  `, 'user-001', 'Owner', 'owner', now, now);
+  `, 'user-001', '罗', 'owner', now, now);
     // 创建默认对话上下文
     await db.run(`
     INSERT OR IGNORE INTO conversation_contexts (id, conversation_id, created_at, updated_at)
